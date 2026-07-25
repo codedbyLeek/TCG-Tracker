@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str
 
+    # External APIs
+    POKEMON_TCG_API_KEY: str = ""
+
     # App
     ENVIRONMENT: str = "development"
 

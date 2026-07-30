@@ -1,5 +1,3 @@
-"""Sync Pokemon cards and prices from the Pokemon TCG API (pokemontcg.io)."""
-
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -13,30 +11,53 @@ from app.models import Card, Price
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://api.pokemontcg.io/v2"
-PAGE_SIZE = 250
+BASE_URL = "https://api.scrydex.com/pokemon/v1"
+PAGE_SIZE = 100  # Scrydex max is 100 (pokemontcg.io allowed 250)
+
+CONDITION_PRIORITY = ("NM", "LP", "MP", "HP", "DM")
 
 
 def _build_headers() -> dict:
-    """API key is optional but grants higher rate limits."""
-    if settings.POKEMON_TCG_API_KEY:
-        return {"X-Api-Key": settings.POKEMON_TCG_API_KEY}
-    logger.warning("POKEMON_TCG_API_KEY not set - using low unauthenticated rate limits")
-    return {}
+    """Scrydex requires both headers on every request - no unauthenticated tier."""
+    return {
+        "X-Api-Key": settings.SCRYDEX_API_KEY,
+        "X-Team-ID": settings.SCRYDEX_TEAM_ID,
+    }
 
 
 def _extract_market_price(api_card: dict) -> Decimal | None:
-    """Pull the best available market price from tcgplayer data, if present."""
-    prices = api_card.get("tcgplayer", {}).get("prices", {})
-    for variant in ("holofoil", "reverseHolofoil", "normal", "1stEditionHolofoil"):
-        market = prices.get(variant, {}).get("market")
-        if market is not None:
-            return Decimal(str(market))
+    """Pull the best available raw USD market price from the card's variants."""
+    best_by_condition: dict[str, Decimal] = {}
+
+    for variant in api_card.get("variants", []):
+        for price in variant.get("prices", []):
+            if price.get("type") != "raw":
+                continue
+            if price.get("currency") != "USD":
+                continue
+            market = price.get("market")
+            condition = price.get("condition")
+            if market is None or condition is None:
+                continue
+            if condition not in best_by_condition:
+                best_by_condition[condition] = Decimal(str(market))
+
+    for condition in CONDITION_PRIORITY:
+        if condition in best_by_condition:
+            return best_by_condition[condition]
+    return None
+
+
+def _extract_image_url(api_card: dict) -> str | None:
+    """Find the front-facing large image URL, if present."""
+    for image in api_card.get("images", []):
+        if image.get("type") == "front":
+            return image.get("large")
     return None
 
 
 def sync_set(db: Session, set_id: str) -> tuple[int, int]:
-    """Sync all cards in one Pokemon set. Returns (created, updated)."""
+    """Sync all cards in one expansion from Scrydex into the database."""
     created, updated = 0, 0
     page = 1
     now = datetime.now(timezone.utc)
@@ -44,9 +65,9 @@ def sync_set(db: Session, set_id: str) -> tuple[int, int]:
     with httpx.Client(base_url=BASE_URL, headers=_build_headers(), timeout=30.0) as client:
         while True:
             response = client.get(
-                "/cards",
+                f"/expansions/{set_id}/cards",
                 params={
-                    "q": f"set.id:{set_id}",
+                    "include": "prices",
                     "page": page,
                     "pageSize": PAGE_SIZE,
                 },
@@ -69,11 +90,11 @@ def sync_set(db: Session, set_id: str) -> tuple[int, int]:
                     card = Card(
                         external_id=api_card["id"],
                         name=api_card["name"],
-                        set_name=api_card.get("set", {}).get("name"),
+                        set_name=api_card.get("expansion", {}).get("name"),
                         card_number=api_card.get("number"),
                         rarity=api_card.get("rarity"),
                         game="pokemon",
-                        image_url=api_card.get("images", {}).get("large"),
+                        image_url=_extract_image_url(api_card),
                     )
                     db.add(card)
                     created += 1
@@ -87,11 +108,16 @@ def sync_set(db: Session, set_id: str) -> tuple[int, int]:
                     db.add(
                         Price(
                             card_id=card.id,
-                            source="tcgplayer",
+                            source="scrydex",
                             price_usd=market_price,
                             condition="near_mint",
                         )
                     )
+
+            total_count = payload.get("totalCount") or payload.get("total_count") or 0
+            total_fetched = (page - 1) * PAGE_SIZE + len(api_cards)
+            if total_fetched >= total_count:
+                break
 
             page += 1
 

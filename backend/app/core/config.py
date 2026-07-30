@@ -11,7 +11,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str
 
     # External APIs
-    POKEMON_TCG_API_KEY: str = ""
+    SCRYDEX_API_KEY: str
+    SCRYDEX_TEAM_ID: str
 
     # App
     ENVIRONMENT: str = "development"

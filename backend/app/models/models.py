@@ -83,7 +83,7 @@ class Price(Base):
     __tablename__ = "prices"
     __table_args__ = (
         CheckConstraint(
-            "source IN ('tcgplayer', 'ebay', 'one_piece_api')",
+            "source IN ('tcgplayer', 'ebay', 'one_piece_api', 'scrydex')",
             name="prices_source_check",
         ),
     )

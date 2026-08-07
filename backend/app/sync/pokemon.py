@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models import Card, Price
+from app.core.storage import upload_image_to_r2
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,23 @@ def sync_set(db: Session, set_id: str) -> tuple[int, int]:
                 )
 
                 if card is None:
+                    source_image_url = _extract_image_url(api_card)
+                    image_url = source_image_url
+
+                    if source_image_url is not None:
+                        try:
+                            image_url = upload_image_to_r2(
+                                source_url=source_image_url,
+                                game="pokemon",
+                                external_id=api_card["id"],
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Failed to upload image to R2 for card %s, using source URL instead",
+                                api_card["id"],
+                                exc_info=True,
+                            )
+
                     card = Card(
                         external_id=api_card["id"],
                         name=api_card["name"],
@@ -114,6 +132,8 @@ def sync_set(db: Session, set_id: str) -> tuple[int, int]:
                         )
                     )
 
+                db.commit()
+                
             total_count = payload.get("totalCount") or payload.get("total_count") or 0
             total_fetched = (page - 1) * PAGE_SIZE + len(api_cards)
             if total_fetched >= total_count:
@@ -121,6 +141,6 @@ def sync_set(db: Session, set_id: str) -> tuple[int, int]:
 
             page += 1
 
-    db.commit()
+
     logger.info("Synced set %s: %d created, %d updated", set_id, created, updated)
     return created, updated

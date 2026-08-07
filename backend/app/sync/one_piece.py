@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 
 from app.models import Card, Price
+from app.core.storage import upload_image_to_r2
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,23 @@ def sync_set(db: Session, set_id: str) -> tuple[int, int]:
         )
 
         if card is None:
+            source_image_url = api_card.get("card_image")
+            image_url = source_image_url
+
+            if source_image_url is not None:
+                try:
+                    image_url = upload_image_to_r2(
+                        source_url=source_image_url,
+                        game="one_piece",
+                        external_id=external_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to upload image to R2 for card %s, using source URL instead",
+                        external_id,
+                        exc_info=True,
+                    )
+                    
             card = Card(
                 external_id=external_id,
                 name=api_card["card_name"],

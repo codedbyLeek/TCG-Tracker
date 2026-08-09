@@ -12,7 +12,7 @@ import logging
 import sys
 
 from app.core.database import SessionLocal
-from app.sync.one_piece import sync_set
+from app.sync.one_piece import sync_all_sets, sync_set
 
 
 def main() -> None:
@@ -22,12 +22,22 @@ def main() -> None:
         print("Usage: python -m scripts.sync_one_piece <set_id>")
         sys.exit(1)
 
-    set_id = sys.argv[1]
+    target = sys.argv[1]
 
     db = SessionLocal()
     try:
-        created, updated = sync_set(db, set_id)
-        print(f"Done: {created} created, {updated} updated")
+        if target == "all":
+            summary = sync_all_sets(db)
+            print(
+                f"Done: {summary['sets_attempted']} sets attempted, "
+                f"{summary['sets_failed']} failed, "
+                f"{summary['created']} created, {summary['updated']} updated"
+            )
+            for set_id, error in summary["failures"]:
+                print(f" FAILED {set_id}: {error}")
+        else:
+            created, updated = sync_set(db, target)
+            print(f"Done: {created} created, {updated} updated")
     finally:
         db.close()
 

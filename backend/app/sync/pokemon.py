@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
@@ -57,6 +57,32 @@ def _extract_image_url(api_card: dict) -> str | None:
     return None
 
 
+def list_expansions() -> list[dict]:
+    """Fetch all English physical-card expansions from Scrydex."""
+    expansions: list[dict] = []
+    page = 1
+
+    with httpx.Client(base_url=BASE_URL, headers=_build_headers(), timeout=30.0) as client:
+        while True:
+            response = client.get(
+                "/en/expansions",
+                params={"page": page, "pageSize": PAGE_SIZE},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            data = payload.get("data", [])
+            expansions.extend(data)
+
+
+            total_count = payload.get("total_count") or 0
+            if not data or len(expansions) >= total_count:
+                break
+            page += 1
+
+    return [e for e in expansions if not e.get("is_online_only")]
+
+
+
 def sync_set(db: Session, set_id: str) -> tuple[int, int]:
     """Sync all cards in one expansion from Scrydex into the database."""
     created, updated = 0, 0
@@ -112,7 +138,7 @@ def sync_set(db: Session, set_id: str) -> tuple[int, int]:
                         card_number=api_card.get("number"),
                         rarity=api_card.get("rarity"),
                         game="pokemon",
-                        image_url=_extract_image_url(api_card),
+                        image_url=image_url,
                     )
                     db.add(card)
                     created += 1
@@ -133,7 +159,7 @@ def sync_set(db: Session, set_id: str) -> tuple[int, int]:
                     )
 
                 db.commit()
-                
+
             total_count = payload.get("totalCount") or payload.get("total_count") or 0
             total_fetched = (page - 1) * PAGE_SIZE + len(api_cards)
             if total_fetched >= total_count:
@@ -143,4 +169,77 @@ def sync_set(db: Session, set_id: str) -> tuple[int, int]:
 
 
     logger.info("Synced set %s: %d created, %d updated", set_id, created, updated)
-    return created, updated
+    return created, updated 
+
+
+def _sync_expansions(db: Session, expansions: list[dict]) -> dict:
+    """Shared orchestration: sync the given expansions, isolating pre-expansion failures."""
+    total_created, total_updated = 0, 0
+    failures: list[tuple[str, str]] = []
+
+    for expansion in expansions:
+        expansion_id = expansion["id"]
+        try:
+            created, updated = sync_set(db, expansion_id)
+        except Exception as exc:
+            logger.exception(
+                "Expansion %s failed, continuing with remaining expansions", expansion_id
+            )
+            db.rollback()
+            failures.append((expansion_id, str(exc)))
+            continue
+
+        total_created += created
+        total_updated += updated
+
+    return {
+        "sets_attempted": len(expansions),
+        "sets_failed": len(failures),
+        "created": total_created,
+        "updated": total_updated,
+        "failures": failures,
+    }
+
+
+def sync_all_expansions(db: Session) -> dict:
+    """Sync every English physical expansion."""
+    expansions = list_expansions()
+    estimated_requests = sum(
+        (e.get("total", 0) + PAGE_SIZE - 1) // PAGE_SIZE for e in expansions
+    )
+    logger.info(
+        "Discovered %d Pokemon expansion (~%d card-page requests)",
+        len(expansions),
+        estimated_requests,
+    )
+    return _sync_expansion(db, expansions)
+
+
+def sync_recent_expansions(db: Session, days: int = 90) -> dict:
+    """Sync only expansions released within the last 'days' days."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    recent: list[dict] = []
+
+    for expansion in list_expansions():
+        release_date = expansion.get("release_date")
+        if not release_date:
+            continue
+        try:
+            released_at = datetime.strptime(release_date, "%Y/%m/%d").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            logger.warning(
+                "Expansion %s has unparseable release_date %r, skipping",
+                expansion.get("id"),
+                release_date,
+            )
+            continue
+        if released_at >= cutoff:
+            recent.append(expansion)
+
+
+    logger.info(
+        "%d expansion released in the last %d days", len(recent), days
+    )
+    return _sync_expansion(db, recent)

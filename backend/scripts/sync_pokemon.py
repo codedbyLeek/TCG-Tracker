@@ -3,17 +3,18 @@
 Usage:
     python -m scripts.sync_pokemon <set_id>   # one expansion
     python -m scripts.sync_pokemon all        # every English physical expansion
-
+    python -m scripts.sync_pokemon recent     # expansions from the last 90 days
 Examples:
     python -m scripts.sync_pokemon sv3pt5
     python -m scripts.sync_pokemon all
+    python -m scripts.sync_pokemon recent
 """
 
 import logging
 import sys
 
 from app.core.database import SessionLocal
-from app.sync.pokemon import sync_all_expansions, sync_set
+from app.sync.pokemon import sync_all_expansions, sync_recent_expansions, sync_set
 
 
 def main() -> None:
@@ -36,6 +37,17 @@ def main() -> None:
             )
             for expansion_id, error in summary["failures"]:
                 print(f"  FAILED {expansion_id}: {error}")
+        
+        elif target == "recent":
+            summary = sync_recent_expansions(db)
+            print(
+                f"Done: {summary['sets_attempted']} expansions attempted, "
+                f"{summary['sets_failed']} failed, "
+                f"{summary['created']} created, {summary['updated']} updated"
+            )
+            for expansion_id, error in summary["failures"]:
+                print(f"  FAILED {expansion_id}: {error}")
+
         else:
             created, updated = sync_set(db, target)
             print(f"Done: {created} created, {updated} updated")

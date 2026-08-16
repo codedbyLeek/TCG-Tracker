@@ -192,6 +192,24 @@ def _sync_expansions(db: Session, expansions: list[dict]) -> dict:
         total_created += created
         total_updated += updated
 
+    if failures:
+        logger.info("Retrying %d failed expansions", len(failures))
+        remaining_failures: list[tuple[str, str]] = []
+
+        for expansion_id, _ in failures:
+            try:
+                created, updated = sync_set(db, expansion_id)
+            except Exception as exc:
+                logger.exception("Expansion %s failed again on retry", expansion_id)
+                db.rollback()
+                remaining_failures.append((expansion_id, str(exc)))
+                continue
+
+            total_created += created
+            total_updated += updated
+
+        failures = remaining_failures
+
     return {
         "sets_attempted": len(expansions),
         "sets_failed": len(failures),
@@ -212,7 +230,7 @@ def sync_all_expansions(db: Session) -> dict:
         len(expansions),
         estimated_requests,
     )
-    return _sync_expansion(db, expansions)
+    return _sync_expansions(db, expansions)
 
 
 def sync_recent_expansions(db: Session, days: int = 90) -> dict:
@@ -242,4 +260,4 @@ def sync_recent_expansions(db: Session, days: int = 90) -> dict:
     logger.info(
         "%d expansion released in the last %d days", len(recent), days
     )
-    return _sync_expansion(db, recent)
+    return _sync_expansions(db, recent)
